@@ -1,0 +1,32 @@
+name = "cloudflare-push-gateway"
+compatibility_date = "2025-04-01"
+main = "src/index.ts"
+workers_dev = true
+
+routes = [
+  { pattern = "push.golder.tech", custom_domain = true }
+]
+
+[[durable_objects.bindings]]
+name = "METRICS_STORE"
+class_name = "MetricsStore"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["MetricsStore"]
+
+# Uncomment and set these for basic auth on the push endpoint:
+[vars]
+PUSHGATEWAY_AUTH_USER = "admin"
+PUSHGATEWAY_AUTH_PASS = "67YzxYezCUoCBgDJ8wt"
+
+# JWT/OIDC authentication (overrides basic auth):
+# JWT_ISSUER = "https://accounts.google.com"
+# JWT_AUDIENCE = "your-client-id.apps.googleusercontent.com"
+# JWKS_URI = ""  # defaults to {issuer}/.well-known/jwks.json
+
+# API tokens for consumer apps (comma-separated):
+API_TOKENS = "6Eli9kMFYwByglE"
+
+[env.testing]
+vars = { PUSHGATEWAY_AUTH_USER = "testuser", PUSHGATEWAY_AUTH_PASS = "testpass", API_TOKENS = "test-api-token" }
