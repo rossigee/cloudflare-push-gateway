@@ -258,10 +258,114 @@ async function handleDocs(env: Env): Promise<Response> {
 
   <div class="section">
     <div class="section-header">
-      <h2>Overview</h2>
+      <h2>API Overview</h2>
     </div>
     <div class="section-content">
-      <p>Authentication is optional but recommended for production deployments. Three methods are supported, checked in order:</p>
+      <p>This API provides Prometheus Pushgateway-compatible endpoints for pushing and retrieving metrics. Authentication is optional but recommended for production deployments.</p>
+      <p><strong>Base URL:</strong> <code>https://your-worker.workers.dev</code></p>
+      <p><strong>Content Type:</strong> Metrics endpoints return <code>text/plain; version=0.0.4</code> (Prometheus format)</p>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header">
+      <h2>REST API Reference</h2>
+    </div>
+    <div class="section-content">
+      <div class="method">
+        <h3>Push Metrics</h3>
+        <pre><strong>PUT/POST</strong> /metrics/job/{job}[/{label}/{value}]...</pre>
+        <p>Push or replace metrics for a grouping. Additional labels can be specified as path parameters.</p>
+        <p><strong>Parameters:</strong></p>
+        <ul>
+          <li><code>job</code> (path) - Job name</li>
+          <li><code>label</code> (path, optional) - Additional grouping label name</li>
+          <li><code>value</code> (path, optional) - Additional grouping label value</li>
+        </ul>
+        <p><strong>Body:</strong> Prometheus metrics in text format</p>
+        <p><strong>Examples:</strong></p>
+        <pre>curl -X PUT --data-binary 'cpu_usage 0.85' \\
+  /metrics/job/my_job/instance/server1</pre>
+      </div>
+
+      <div class="method">
+        <h3>Retrieve Metrics</h3>
+        <pre><strong>GET</strong> /metrics/job/{job}[/{label}/{value}]...</pre>
+        <p>Retrieve metrics for a specific grouping.</p>
+        <p><strong>Parameters:</strong></p>
+        <ul>
+          <li><code>job</code> (path) - Job name</li>
+          <li><code>label</code> (path, optional) - Additional grouping label name</li>
+          <li><code>value</code> (path, optional) - Additional grouping label value</li>
+        </ul>
+        <p><strong>Response:</strong> Metrics in Prometheus text format</p>
+        <pre>curl /metrics/job/my_job/instance/server1</pre>
+      </div>
+
+      <div class="method">
+        <h3>Get All Metrics</h3>
+        <pre><strong>GET</strong> /metrics</pre>
+        <p>Retrieve all metrics across all jobs and groupings.</p>
+        <p><strong>Response:</strong> All metrics in Prometheus text format</p>
+        <pre>curl /metrics</pre>
+      </div>
+
+      <div class="method">
+        <h3>Delete Metrics</h3>
+        <pre><strong>DELETE</strong> /metrics/job/{job}[/{label}/{value}]...</pre>
+        <p>Delete metrics for a specific grouping.</p>
+        <p><strong>Parameters:</strong></p>
+        <ul>
+          <li><code>job</code> (path) - Job name</li>
+          <li><code>label</code> (path, optional) - Additional grouping label name</li>
+          <li><code>value</code> (path, optional) - Additional grouping label value</li>
+        </ul>
+        <p><strong>Examples:</strong></p>
+        <pre># Delete specific instance
+curl -X DELETE /metrics/job/my_job/instance/server1
+
+# Delete all instances for a job
+curl -X DELETE /metrics/job/my_job</pre>
+      </div>
+
+      <div class="method">
+        <h3>Get Targets</h3>
+        <pre><strong>GET</strong> /api/v1/targets</pre>
+        <p>Get list of all metric targets (Prometheus service discovery format).</p>
+        <p><strong>Response:</strong> JSON with target information</p>
+        <pre>curl /api/v1/targets</pre>
+      </div>
+
+      <div class="method">
+        <h3>Health Check</h3>
+        <pre><strong>GET</strong> /health</pre>
+        <p>Get service health status.</p>
+        <p><strong>Response:</strong> JSON health information</p>
+        <pre>curl /health</pre>
+      </div>
+
+      <div class="method">
+        <h3>Web UI</h3>
+        <pre><strong>GET</strong> /</pre>
+        <p>Access the web interface for browsing and managing metrics.</p>
+        <p><strong>Response:</strong> HTML interface</p>
+      </div>
+
+      <div class="method">
+        <h3>Documentation</h3>
+        <pre><strong>GET</strong> /docs</pre>
+        <p>Access this API documentation page.</p>
+        <p><strong>Response:</strong> HTML documentation</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header">
+      <h2>Authentication Methods</h2>
+    </div>
+    <div class="section-content">
+      <p>Three authentication methods are supported, checked in order:</p>
       <ol>
         <li><strong>Basic Auth</strong> - Username/password via HTTP Basic authentication</li>
         <li><strong>JWT/OIDC</strong> - Bearer tokens validated against an OIDC provider</li>
@@ -358,13 +462,14 @@ curl -H "X-API-Key: token1" \\
       <h2>Authentication Flow</h2>
     </div>
     <div class="section-content">
-      <p>Requests are authenticated in this order:</p>
+      <p>When authentication is configured, requests are validated in this order:</p>
       <ol>
         <li><strong>Authorization: Bearer &lt;token&gt;</strong> → Try JWT validation → If fails, try API tokens → If fails, return 401</li>
         <li><strong>Authorization: Basic &lt;creds&gt;</strong> → Check username/password → If fails, return 401</li>
         <li><strong>X-API-Key: &lt;token&gt;</strong> → Check API tokens → If fails, return 401</li>
-        <li><strong>No auth headers</strong> → Return 401 (unless no auth is configured)</li>
+        <li><strong>No auth headers</strong> → Return 401</li>
       </ol>
+      <p><strong>Note:</strong> Authentication is bypassed for requests from localhost (development/testing).</p>
     </div>
   </div>
 
