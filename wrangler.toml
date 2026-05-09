@@ -16,9 +16,9 @@ tag = "v1"
 new_classes = ["MetricsStore"]
 
 # Uncomment and set these for basic auth on the push endpoint:
-[vars]
-PUSHGATEWAY_AUTH_USER = "admin"
-PUSHGATEWAY_AUTH_PASS = "67YzxYezCUoCBgDJ8wt"
+# [vars]
+# PUSHGATEWAY_AUTH_USER = "admin"
+# PUSHGATEWAY_AUTH_PASS = "your-secure-password"
 
 # JWT/OIDC authentication (overrides basic auth):
 # JWT_ISSUER = "https://accounts.google.com"
@@ -26,7 +26,7 @@ PUSHGATEWAY_AUTH_PASS = "67YzxYezCUoCBgDJ8wt"
 # JWKS_URI = ""  # defaults to {issuer}/.well-known/jwks.json
 
 # API tokens for consumer apps (comma-separated):
-API_TOKENS = "6Eli9kMFYwByglE"
+# API_TOKENS = "tok1,tok2,tok3"
 
 [env.testing]
 vars = { PUSHGATEWAY_AUTH_USER = "testuser", PUSHGATEWAY_AUTH_PASS = "testpass", API_TOKENS = "test-api-token" }
