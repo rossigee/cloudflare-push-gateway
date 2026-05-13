@@ -169,9 +169,9 @@ async function handleUI(env: Env): Promise<Response> {
           .map(([k, v]) => `${k}="${v}"`)
           .join(', ');
         const path = `/metrics/job/${encodeURIComponent(job)}${encodeLabelParts(entry.labels)}`;
-        const contentPreview = entry.content.length > 200
+        const contentPreview = (entry.content.length > 200
           ? entry.content.substring(0, 200) + '...'
-          : entry.content;
+          : entry.content).replace(/`/g, '\\`');
         html += `<div class="instance-row">
           <span>${labelStr || '(no additional labels)'}</span>
           <span class="actions">
@@ -533,6 +533,17 @@ export default {
         case path.startsWith('/metrics/job/'):
           if (!(await authenticate(request, env))) return unauthorized(env);
           return handleMetricsJob(request, env);
+        case path === '/favicon.ico':
+          // Return a simple transparent 16x16 favicon
+          const favicon = new Uint8Array([
+            0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x10, 0x10, 0x00, 0x00, 0x01, 0x00, 0x20, 0x00, 0x68, 0x04,
+            0x00, 0x00, 0x16, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x20, 0x00,
+            0x00, 0x00, 0x01, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+          ]);
+          return new Response(favicon, {
+            headers: { 'Content-Type': 'image/x-icon' },
+          });
         default:
           if (!(await authenticate(request, env))) return unauthorized(env);
           return new Response('Not Found', { status: 404 });
