@@ -108,18 +108,27 @@ export class MetricsStore extends DurableObject {
 
     if (method === 'GET' && path === '/list-structured') {
       const entries = await this.ctx.storage.list<string>();
-      const all: MetricEntry[] = [];
+      const tsMap = new Map<string, number>();
+      const contentEntries: Array<[string, string]> = [];
 
-      for (const [key, content] of entries) {
-        if (key.endsWith(TS_SUFFIX)) continue;
+      for (const [key, value] of entries) {
+        if (typeof value !== 'string') continue;
+        if (key.endsWith(TS_SUFFIX)) {
+          tsMap.set(key, parseInt(value, 10));
+        } else {
+          contentEntries.push([key, value]);
+        }
+      }
+
+      const all: MetricEntry[] = [];
+      for (const [key, content] of contentEntries) {
         const parsed = parseKey(key);
-        if (parsed && typeof content === 'string') {
-          const tsStr = await this.ctx.storage.get<string>(tsKey(key));
+        if (parsed) {
           all.push({
             job: parsed.job,
             labels: parsed.additionalLabels,
             content,
-            updatedAt: tsStr ? parseInt(tsStr, 10) : 0,
+            updatedAt: tsMap.get(tsKey(key)) ?? 0,
           });
         }
       }
@@ -205,7 +214,10 @@ export class MetricsStore extends DurableObject {
       return new Response(null, { status: 200 });
     }
 
-    return new Response('Method Not Allowed', { status: 405 });
+    return new Response('Method Not Allowed', {
+      status: 405,
+      headers: { Allow: 'GET, POST, PUT, DELETE' },
+    });
   }
 
   private static concatResults(entries: IterableIterator<[string, unknown]>): Response {
