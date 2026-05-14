@@ -3,7 +3,7 @@ import { authenticate, unauthorized, getAuthConfig } from './auth';
 
 export { MetricsStore };
 
-const VERSION = '0.1.1';
+const VERSION = '0.2.0';
 
 function getStore(env: Env): DurableObjectStub<MetricsStore> {
   const id = env.METRICS_STORE.idFromName('pushgateway');
