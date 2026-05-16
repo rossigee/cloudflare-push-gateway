@@ -1,4 +1,4 @@
-.PHONY: vault-secrets config-cloudflare deploy test
+.PHONY: vault-secrets config-cloudflare build deploy test ci
 
 VAULT_PATH=infrastructure/push-gateway
 CLOUDFLARE_ACCOUNT_ID=c1b74f148aee28025816e104a92622c5
@@ -32,8 +32,17 @@ config-cloudflare:
 	echo "$$BASE_URL" | npx wrangler secret put BASE_URL --env="" && \
 	echo "Cloudflare secrets configured"
 
+build:
+	npm run build
+
 deploy:
 	npm run deploy
 
 test:
 	npm run test
+
+ci:
+	npm ci
+	npm run typecheck
+	npm test
+	npm run build

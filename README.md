@@ -299,8 +299,8 @@ routes = [
 
 The repo includes a GitHub Actions workflow at `.github/workflows/ci.yml`:
 
-1. **Test job**: checks out code, installs deps, runs `typecheck` and `test`
-2. **Deploy job** (main only): runs after tests pass, deploys with `wrangler deploy`
+ 1. **Test job**: checks out code, installs deps, runs `typecheck`, `test`, and `build` (dry-run deployment)
+ 2. **Deploy job** (tagged releases only): runs after tests pass, deploys with `wrangler deploy`
 
 To enable GitHub Actions deployment, add this repository secret:
 
