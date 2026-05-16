@@ -7,6 +7,8 @@ export interface Env {
   JWT_ISSUER?: string;
   JWT_AUDIENCE?: string;
   JWKS_URI?: string;
+  KEYCLOAK_CLIENT_SECRET?: string;
+  BASE_URL?: string;
   API_TOKENS?: string;
 }
 
@@ -169,6 +171,21 @@ export class MetricsStore extends DurableObject {
         if (!keysToDelete.includes(dk)) keysToDelete.push(dk);
       }
       await this.ctx.storage.delete(keysToDelete);
+      return new Response(null, { status: 200 });
+    }
+
+    if (method === 'DELETE' && path.startsWith('/delete/')) {
+      const parts = path.split('/').filter(p => p.length > 0);
+      if (parts.length < 2) {
+        return new Response('Not Found', { status: 404 });
+      }
+      const job = decodeURIComponent(parts[1]);
+      const additionalLabels: Labels = {};
+      for (let i = 2; i + 1 < parts.length; i += 2) {
+        additionalLabels[decodeURIComponent(parts[i])] = decodeURIComponent(parts[i + 1]);
+      }
+      const ck = serializeKey(job, additionalLabels);
+      await this.ctx.storage.delete([ck, tsKey(ck)]);
       return new Response(null, { status: 200 });
     }
 

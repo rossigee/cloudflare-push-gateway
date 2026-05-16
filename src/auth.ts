@@ -7,6 +7,19 @@ export interface AuthConfig {
   jwtAudience: string | null;
   jwksUri: string | null;
   apiTokens: string[];
+  oauth2: {
+    authorizationEndpoint: string;
+    tokenEndpoint: string;
+    clientId: string;
+    clientSecret: string;
+    redirectUri: string | null;
+  } | null;
+}
+
+export interface SessionTokens {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt: number;
 }
 
 export function getAuthConfig(env: Env): AuthConfig {
@@ -19,12 +32,28 @@ export function getAuthConfig(env: Env): AuthConfig {
     ? env.API_TOKENS.split(',').map(t => t.trim()).filter(Boolean)
     : [];
 
+  let oauth2: AuthConfig['oauth2'] = null;
+  if (env.JWT_ISSUER && env.KEYCLOAK_CLIENT_SECRET) {
+    const issuer = env.JWT_ISSUER;
+    oauth2 = {
+      authorizationEndpoint: `${issuer}/protocol/openid-connect/auth`,
+      tokenEndpoint: `${issuer}/protocol/openid-connect/token`,
+      clientId: 'push-gateway',
+      clientSecret: env.KEYCLOAK_CLIENT_SECRET,
+      redirectUri: env.BASE_URL ? `${env.BASE_URL}/oauth/callback` : null,
+    };
+  } else if (env.JWT_ISSUER) {
+    // For test environments that only have JWT_ISSUER but not full OAuth2 setup
+    console.warn('JWT_ISSUER configured but KEYCLOAK_CLIENT_SECRET missing - OAuth2 login disabled');
+  }
+
   return {
     basic,
     jwtIssuer: env.JWT_ISSUER || null,
     jwtAudience: env.JWT_AUDIENCE || null,
     jwksUri: env.JWKS_URI || null,
     apiTokens,
+    oauth2,
   };
 }
 
@@ -55,8 +84,40 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+async function refreshToken(refreshToken: string, config: AuthConfig): Promise<boolean> {
+  if (!config.oauth2?.tokenEndpoint) return false;
+
+  try {
+    const tokenResp = await fetch(config.oauth2.tokenEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: config.oauth2.clientId,
+        client_secret: config.oauth2.clientSecret,
+      }),
+    });
+
+    if (!tokenResp.ok) return false;
+
+    const tokens = await tokenResp.json() as { access_token?: string };
+    if (tokens.access_token) {
+      console.log('Token refresh successful');
+      return true;
+    }
+    return false;
+  } catch (e) {
+    console.error('Token refresh failed:', e);
+    return false;
+  }
+}
+
 async function validateJWT(token: string, config: AuthConfig): Promise<boolean> {
-  if (!config.jwtIssuer) return false;
+  if (!config.jwtIssuer) {
+    console.error('JWT issuer not configured');
+    return false;
+  }
 
   const jwksUri = config.jwksUri || `${config.jwtIssuer}/.well-known/jwks.json`;
   const JWKS = getJWKS(jwksUri);
@@ -67,7 +128,8 @@ async function validateJWT(token: string, config: AuthConfig): Promise<boolean> 
       audience: config.jwtAudience || undefined,
     });
     return true;
-  } catch {
+  } catch (e) {
+    console.error('JWT validation error:', e instanceof Error ? e.message : String(e));
     return false;
   }
 }
@@ -92,34 +154,73 @@ function validateBasicAuth(headerValue: string, config: AuthConfig): boolean {
   return timingSafeEqual(username, config.basic.username) && timingSafeEqual(password, config.basic.password);
 }
 
-export async function authenticate(request: Request, env: Env, config?: AuthConfig): Promise<boolean> {
+export async function authenticate(request: Request, env: Env, config?: AuthConfig): Promise<{ authenticated: boolean; redirect?: string }> {
   const cfg = config ?? getAuthConfig(env);
-  if (!isConfigured(cfg)) return true;
+  if (!isConfigured(cfg)) return { authenticated: true };
 
-  // Allow unauthenticated requests in test environment (localhost)
   const url = new URL(request.url);
-  if (url.hostname === 'localhost') return true;
+  if (url.hostname === 'localhost') return { authenticated: true };
+
+  const sessionCookie = request.headers.get('Cookie')?.match(/pushgateway_session=([^;]+)/)?.[1];
+  if (sessionCookie) {
+    try {
+      const sessionData: SessionTokens = JSON.parse(atob(sessionCookie));
+      
+      if (Date.now() > sessionData.expiresAt && sessionData.refreshToken) {
+        console.log('Access token expired, attempting refresh...');
+        const refreshed = await refreshToken(sessionData.refreshToken, cfg);
+        if (refreshed) {
+          return { authenticated: true };
+        }
+      }
+      
+      if (await validateJWT(sessionData.accessToken, cfg)) {
+        return { authenticated: true };
+      }
+    } catch (e) {
+      console.error('Session cookie parse error:', e);
+    }
+  }
 
   const authHeader = request.headers.get('Authorization');
 
   if (authHeader) {
-    if (authHeader.startsWith('Basic ')) return validateBasicAuth(authHeader, cfg);
+    if (authHeader.startsWith('Basic ')) {
+      const valid = validateBasicAuth(authHeader, cfg);
+      return { authenticated: valid };
+    }
     if (authHeader.startsWith('Bearer ')) {
       const token = authHeader.slice(7);
-      if (await validateJWT(token, cfg)) return true;
-      if (validateApiToken(token, cfg)) return true;
-      return false;
+      if (await validateJWT(token, cfg)) return { authenticated: true };
+      if (validateApiToken(token, cfg)) return { authenticated: true };
+      return { authenticated: false };
     }
-    return false;
+    return { authenticated: false };
   }
 
   const apiKeyHeader = request.headers.get('X-API-Key');
-  if (apiKeyHeader && validateApiToken(apiKeyHeader, cfg)) return true;
+  if (apiKeyHeader && validateApiToken(apiKeyHeader, cfg)) return { authenticated: true };
 
-  return false;
+  if (cfg.oauth2 && request.headers.get('Accept')?.includes('text/html')) {
+    const state = btoa('/');
+    const redirectUri = cfg.oauth2.redirectUri || `${url.origin}/oauth/callback`;
+    const authUrl = new URL(cfg.oauth2.authorizationEndpoint);
+    authUrl.searchParams.set('client_id', cfg.oauth2.clientId);
+    authUrl.searchParams.set('redirect_uri', redirectUri);
+    authUrl.searchParams.set('response_type', 'code');
+    authUrl.searchParams.set('state', state);
+    authUrl.searchParams.set('scope', 'openid');
+    console.log('Redirecting to Keycloak:', authUrl.toString());
+    return { authenticated: false, redirect: authUrl.toString() };
+  }
+
+  return { authenticated: false };
 }
 
-export function unauthorized(config: AuthConfig): Response {
+export function unauthorized(config: AuthConfig, redirectUrl?: string): Response {
+  if (redirectUrl) {
+    return Response.redirect(redirectUrl, 302);
+  }
   const schemes: string[] = [];
   if (config.basic) schemes.push('Basic realm="pushgateway"');
   if (config.jwtIssuer || config.apiTokens.length > 0) schemes.push('Bearer realm="pushgateway"');
@@ -127,5 +228,37 @@ export function unauthorized(config: AuthConfig): Response {
   return new Response('Unauthorized', {
     status: 401,
     headers: { 'WWW-Authenticate': schemes.join(', ') },
+  });
+}
+
+export function createSessionCookie(tokens: SessionTokens | string, path: string = '/'): Response {
+  let sessionData: SessionTokens;
+  
+  if (typeof tokens === 'string') {
+    sessionData = {
+      accessToken: tokens,
+      expiresAt: Date.now() + 3300000, // 55 minutes
+    };
+  } else {
+    sessionData = tokens;
+  }
+
+  const encoded = btoa(JSON.stringify(sessionData));
+  return new Response(null, {
+    status: 302,
+    headers: {
+      'Location': path,
+      'Set-Cookie': `pushgateway_session=${encoded}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=3600`,
+    },
+  });
+}
+
+export function clearSessionCookie(): Response {
+  return new Response(null, {
+    status: 302,
+    headers: {
+      'Location': '/',
+      'Set-Cookie': `pushgateway_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
+    },
   });
 }

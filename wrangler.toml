@@ -25,8 +25,16 @@ new_classes = ["MetricsStore"]
 # JWT_AUDIENCE = "your-client-id.apps.googleusercontent.com"
 # JWKS_URI = ""  # defaults to {issuer}/.well-known/jwks.json
 
+# OAuth2/OIDC for UI login flow (requires JWT_ISSUER and KEYCLOAK_CLIENT_SECRET):
+# KEYCLOAK_CLIENT_SECRET = "your-client-secret"
+# BASE_URL = "https://your-domain.com"  # for OAuth2 redirect URI
+
 # API tokens for consumer apps (comma-separated):
 # API_TOKENS = "tok1,tok2,tok3"
 
+[env.golder]
+account_id = "c1b74f148aee28025816e104a92622c5"
+routes = [{ pattern = "push.golder.tech", custom_domain = true }]
+
 [env.testing]
-vars = { PUSHGATEWAY_AUTH_USER = "testuser", PUSHGATEWAY_AUTH_PASS = "testpass", API_TOKENS = "test-api-token" }
+vars = { PUSHGATEWAY_AUTH_USER = "testuser", PUSHGATEWAY_AUTH_PASS = "testpass", API_TOKENS = "test-api-token", JWT_ISSUER = "https://sso.example.com/auth/realms/test", JWT_AUDIENCE = "test-client" }

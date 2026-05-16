@@ -1,5 +1,5 @@
 import { MetricsStore, Env, MetricEntry, MAX_BODY_SIZE } from './durable-object';
-import { authenticate, unauthorized, getAuthConfig } from './auth';
+import { authenticate, unauthorized, getAuthConfig, createSessionCookie, clearSessionCookie, type SessionTokens } from './auth';
 
 export { MetricsStore };
 
@@ -106,7 +106,10 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function renderFooter(): string {
+function renderFooter(showLogout: boolean = false): string {
+  const loginLogout = showLogout
+    ? `<a href="/logout" style="color: #ff6b6b; text-decoration: none; font-size: 13px; padding: 4px 8px; border-radius: 4px;">Logout</a>`
+    : `<a href="/oauth/callback" style="color: #ff6b6b; text-decoration: none; font-size: 13px; padding: 4px 8px; border-radius: 4px;">Login</a>`;
   return `<div class="footer">
     <div class="footer-nav">
       <a href="/">Home</a>
@@ -114,6 +117,7 @@ function renderFooter(): string {
       <a href="/api/v1/targets">Targets</a>
       <a href="/health">Health</a>
       <a href="/docs">Docs</a>
+      ${loginLogout}
     </div>
     <a href="https://github.com/rossigee/cloudflare-push-gateway" target="_blank" style="color: #888; text-decoration: none; display: inline-flex; align-items: center;">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 4px;">
@@ -124,7 +128,7 @@ function renderFooter(): string {
   </div>`;
 }
 
-async function handleUI(env: Env): Promise<Response> {
+async function handleUI(env: Env, request: Request): Promise<Response> {
   const store = getStore(env);
   const resp = await store.fetch('http://do/list-structured');
   const metrics: MetricEntry[] = await resp.json();
@@ -134,6 +138,8 @@ async function handleUI(env: Env): Promise<Response> {
     if (!byJob.has(m.job)) byJob.set(m.job, []);
     byJob.get(m.job)!.push(m);
   }
+
+  const hasSession = request.headers.get('Cookie')?.includes('pushgateway_session');
 
   let html = `<!DOCTYPE html>
 <html lang="en">
@@ -165,6 +171,13 @@ async function handleUI(env: Env): Promise<Response> {
     .footer-nav { margin-bottom: 12px; display: flex; justify-content: center; gap: 16px; flex-wrap: wrap; }
     .footer-nav a { color: #ff6b6b; text-decoration: none; font-size: 13px; padding: 4px 8px; border-radius: 4px; transition: background-color 0.2s; }
     .footer-nav a:hover { text-decoration: none; background-color: #333; }
+    .status { position: fixed; top: 10px; right: 10px; padding: 6px 12px; border-radius: 4px; font-size: 12px; z-index: 1000; display: none; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+    .status.refreshing { background: #ff9800; color: white; display: block; animation: pulse 2s infinite; }
+    .status.error { background: #f44336; color: white; display: block; }
+    .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #333; color: white; padding: 12px 20px; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.4); z-index: 1001; display: none; font-size: 14px; min-width: 200px; text-align: center; }
+    .toast.show { display: block; animation: slideUp 0.3s ease forwards; }
+    @keyframes slideUp { from { transform: translate(-50%, 30px); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
   </style>
 </head>
 <body>
@@ -172,8 +185,11 @@ async function handleUI(env: Env): Promise<Response> {
     <h1>Prometheus Pushgateway</h1>
     <div style="text-align: right; margin-top: -32px;">
       <a href="/docs" style="color: #ff6b6b; text-decoration: none; font-size: 14px;">Usage Docs</a>
+      ${hasSession ? '<a href="/logout" style="color: #ff6b6b; text-decoration: none; font-size: 14px; margin-left: 12px;">Logout</a>' : ''}
     </div>
-  </div>`;
+  </div>
+  <div id="status" class="status"></div>
+  <div id="toast" class="toast"></div>`;
 
   if (byJob.size === 0) {
     html += '<p class="empty">No metrics have been pushed yet.</p>';
@@ -196,7 +212,7 @@ async function handleUI(env: Env): Promise<Response> {
           <span>${labelStr || '(no additional labels)'}</span>
           <span class="actions">
             <a href="${path}" target="_blank" title="View metrics">View</a>
-            <button class="del" onclick="del(${JSON.stringify(path)})">Delete</button>
+            <button class="del" onclick="del('${path.replace(/'/g, "\\'")}')">Delete</button>
           </span>
         </div>
         <pre>${escapeHtml(contentPreview)}</pre>`;
@@ -206,16 +222,83 @@ async function handleUI(env: Env): Promise<Response> {
   }
 
   html += `<script>
+    let isRefreshing = false;
+    
+    function showToast(message, isError = false) {
+      const toast = document.getElementById('toast');
+      toast.textContent = message;
+      toast.style.background = isError ? '#f44336' : '#4caf50';
+      toast.classList.add('show');
+      setTimeout(() => {
+        toast.classList.remove('show');
+      }, 4000);
+    }
+    
+    function showStatus(isRefreshing) {
+      const status = document.getElementById('status');
+      if (isRefreshing) {
+        status.textContent = '🔄 Refreshing token...';
+        status.className = 'status refreshing';
+      } else {
+        status.className = 'status';
+      }
+    }
+    
+    async function refreshToken() {
+      if (isRefreshing) return;
+      isRefreshing = true;
+      showStatus(true);
+      
+      try {
+        const r = await fetch('/oauth/refresh', { method: 'POST' });
+        if (r.ok) {
+          console.log('Token refreshed successfully');
+          showToast('Session refreshed');
+        } else {
+          console.error('Token refresh failed');
+          showToast('Session refresh failed - please log in again', true);
+        }
+      } catch(e) {
+        console.error('Refresh error:', e);
+        showToast('Connection error during refresh', true);
+      } finally {
+        isRefreshing = false;
+        showStatus(false);
+      }
+    }
+    
     async function del(path) {
       if (!confirm('Delete these metrics?')) return;
       try {
         const r = await fetch(path, { method: 'DELETE' });
         if (r.ok) location.reload();
-        else alert('Delete failed: ' + r.status);
-      } catch(e) { alert('Error: ' + e.message); }
+        else {
+          if (r.status === 401) {
+            showToast('Session expired - please log in again', true);
+          } else {
+            showToast('Delete failed: ' + r.status, true);
+          }
+        }
+      } catch(e) { 
+        showToast('Error: ' + e.message, true); 
+      }
     }
+    
+    // Auto-refresh token every 4 minutes (before 5-minute buffer)
+    setInterval(() => {
+      if (document.cookie.includes('pushgateway_session')) {
+        refreshToken();
+      }
+    }, 4 * 60 * 1000);
+    
+    // Initial check
+    window.addEventListener('load', () => {
+      if (document.cookie.includes('pushgateway_session')) {
+        console.log('Session detected, monitoring for refresh');
+      }
+    });
   </script>
-  ${renderFooter()}
+  ${renderFooter(hasSession)}
 </body>
 </html>`;
 
@@ -358,11 +441,27 @@ curl -X DELETE /metrics/job/my_job</pre>
       </div>
 
       <div class="method">
-        <h3>Documentation</h3>
-        <pre><strong>GET</strong> /docs</pre>
-        <p>Access this API documentation page.</p>
-        <p><strong>Response:</strong> HTML documentation</p>
-      </div>
+        <h3>Keycloak OAuth2 Authentication</h3>
+        <div class="method">
+          <h3>Configuration</h3>
+          <p>Set these environment variables/secrets:</p>
+          <pre>JWT_ISSUER=https://sso.golder.tech/auth/realms/ROSSGolderLtd
+JWT_AUDIENCE=account
+JWKS_URI=https://sso.golder.tech/auth/realms/ROSSGolderLtd/protocol/openid-connect/certs
+KEYCLOAK_CLIENT_SECRET=your-client-secret
+BASE_URL=https://push.golder.tech</pre>
+          <p>Keycloak client must have:</p>
+          <ul>
+            <li>Client ID: <code>push-gateway</code></li>
+            <li>Valid redirect URI: <code>https://push.golder.tech/oauth/callback</code></li>
+          </ul>
+          <p>For production, use Cloudflare Secrets:</p>
+          <pre>npx wrangler secret put JWT_ISSUER
+npx wrangler secret put JWT_AUDIENCE
+npx wrangler secret put JWKS_URI
+npx wrangler secret put KEYCLOAK_CLIENT_SECRET
+npx wrangler secret put BASE_URL</pre>
+        </div>
     </div>
   </div>
 
@@ -373,8 +472,9 @@ curl -X DELETE /metrics/job/my_job</pre>
     <div class="section-content">
       <p>Three authentication methods are supported, checked in order:</p>
       <ol>
+        <li><strong>OAuth2/OIDC (Keycloak)</strong> - Browser users redirected to Keycloak for login (session cookie)</li>
         <li><strong>Basic Auth</strong> - Username/password via HTTP Basic authentication</li>
-        <li><strong>JWT/OIDC</strong> - Bearer tokens validated against an OIDC provider</li>
+        <li><strong>JWT/OIDC</strong> - Bearer tokens validated against Keycloak</li>
         <li><strong>API Tokens</strong> - Static tokens for service-to-service authentication</li>
       </ol>
     </div>
@@ -470,10 +570,11 @@ curl -H "X-API-Key: token1" \\
     <div class="section-content">
       <p>When authentication is configured, requests are validated in this order:</p>
       <ol>
+        <li><strong>Browser requests (Accept: text/html)</strong> → Redirect to Keycloak OAuth2 flow</li>
         <li><strong>Authorization: Bearer &lt;token&gt;</strong> → Try JWT validation → If fails, try API tokens → If fails, return 401</li>
         <li><strong>Authorization: Basic &lt;creds&gt;</strong> → Check username/password → If fails, return 401</li>
         <li><strong>X-API-Key: &lt;token&gt;</strong> → Check API tokens → If fails, return 401</li>
-        <li><strong>No auth headers</strong> → Return 401</li>
+        <li><strong>No auth</strong> → Return 401 (or redirect for browsers)</li>
       </ol>
       <p><strong>Note:</strong> Authentication is bypassed for requests from localhost (development/testing).</p>
     </div>
@@ -500,6 +601,127 @@ async function handleHealth(env: Env): Promise<Response> {
   });
 }
 
+async function handleOAuthCallback(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const code = url.searchParams.get('code');
+  const state = url.searchParams.get('state');
+  const error = url.searchParams.get('error');
+
+  if (error) {
+    console.error('OAuth error:', error, url.searchParams.get('error_description'));
+    return new Response(`OAuth2 error: ${error}`, { status: 400 });
+  }
+
+  if (!code) {
+    console.error('Missing authorization code');
+    return new Response('Missing authorization code', { status: 400 });
+  }
+
+  const config = getAuthConfig(env);
+  if (!config.oauth2) {
+    console.error('OAuth2 not configured');
+    return new Response('OAuth2 not configured', { status: 500 });
+  }
+
+  const redirectUri = config.oauth2.redirectUri || `${url.origin}/oauth/callback`;
+  console.log('Exchanging code for token, redirect_uri:', redirectUri);
+
+  try {
+    const tokenResp = await fetch(config.oauth2.tokenEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: redirectUri,
+        client_id: config.oauth2.clientId,
+        client_secret: config.oauth2.clientSecret,
+      }),
+    });
+
+    if (!tokenResp.ok) {
+      const err = await tokenResp.text();
+      console.error('Token exchange failed:', err);
+      return new Response(`Token exchange failed: ${err}`, { status: 400 });
+    }
+
+    const tokens = await tokenResp.json() as {
+      access_token: string;
+      refresh_token?: string;
+      expires_in?: number;
+      token_type?: string;
+    };
+    console.log('Token exchange successful, token type:', tokens.token_type);
+    
+    const redirectPath = state ? atob(state) : '/';
+    const sessionTokens: SessionTokens = {
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token,
+      expiresAt: Date.now() + ((tokens.expires_in || 300) * 1000) - 300000, // 5 minutes buffer
+    };
+    return createSessionCookie(sessionTokens, redirectPath);
+  } catch (err) {
+    console.error('OAuth2 token exchange error:', err);
+    return new Response('Token exchange failed', { status: 500 });
+  }
+}
+
+async function handleLogout(): Promise<Response> {
+  return clearSessionCookie();
+}
+
+async function handleTokenRefresh(request: Request, env: Env): Promise<Response> {
+  const config = getAuthConfig(env);
+  if (!config.oauth2) {
+    return new Response('OAuth2 not configured', { status: 500 });
+  }
+
+  const sessionCookie = request.headers.get('Cookie')?.match(/pushgateway_session=([^;]+)/)?.[1];
+  if (!sessionCookie) {
+    return new Response('No session', { status: 401 });
+  }
+
+  try {
+    const sessionData: SessionTokens = JSON.parse(atob(sessionCookie));
+    if (!sessionData.refreshToken) {
+      return new Response('No refresh token', { status: 401 });
+    }
+
+    const tokenResp = await fetch(config.oauth2.tokenEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: sessionData.refreshToken,
+        client_id: config.oauth2.clientId,
+        client_secret: config.oauth2.clientSecret,
+      }),
+    });
+
+    if (!tokenResp.ok) {
+      const err = await tokenResp.text();
+      console.error('Token refresh failed:', err);
+      return new Response('Refresh failed', { status: 401 });
+    }
+
+    const tokens = await tokenResp.json() as {
+      access_token: string;
+      refresh_token?: string;
+      expires_in?: number;
+    };
+    const newSession: SessionTokens = {
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token || sessionData.refreshToken, // Use new refresh token if provided (rotation)
+      expiresAt: Date.now() + ((tokens.expires_in || 300) * 1000) - 300000,
+    };
+
+    return createSessionCookie(newSession, '/');
+  } catch (err) {
+    console.error('Token refresh error:', err);
+    return new Response('Refresh error', { status: 500 });
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -507,13 +729,23 @@ export default {
 
     const withAuth = async (handler: () => Promise<Response>): Promise<Response> => {
       const config = getAuthConfig(env);
-      if (!(await authenticate(request, env, config))) return unauthorized(config);
+      const result = await authenticate(request, env, config);
+      if (!result.authenticated) {
+        if (result.redirect) return unauthorized(config, result.redirect);
+        return unauthorized(config);
+      }
       return handler();
     };
 
     try {
-      if (path === '/' || path === '') {
-        return withAuth(() => handleUI(env));
+      if (path === '/oauth/callback') {
+        return handleOAuthCallback(request, env);
+      } else if (path === '/oauth/refresh') {
+        return handleTokenRefresh(request, env);
+      } else if (path === '/logout') {
+        return withAuth(() => handleLogout());
+      } else if (path === '/' || path === '') {
+        return withAuth(() => handleUI(env, request));
       } else if (path === '/docs') {
         return withAuth(() => handleDocs());
       } else if (path === '/health') {
